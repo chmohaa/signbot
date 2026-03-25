@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 
@@ -36,7 +36,7 @@ templates = Jinja2Templates(directory="app/templates")
 
 crypto = CryptoService(settings.encryption_key)
 file_store = PrivateFileStore(settings.private_storage_dir)
-signer = SignerService()
+signer = SignerService(signer_mode=settings.signer_mode, signer_command=settings.signer_command or None)
 processing_jobs: set[str] = set()
 
 
@@ -261,6 +261,58 @@ def wallet_delete(payload: WalletDeleteRequest, session: Session = Depends(get_s
     return {"deleted": removed}
 
 
+
+
+@app.get("/internal/admin/jobs", dependencies=[Depends(internal_auth), Depends(owner_auth)])
+def admin_jobs(session: Session = Depends(get_session)):
+    rows = session.exec(select(UploadJob)).all()
+    return [
+        {
+            "job_id": row.job_id,
+            "state": row.state,
+            "user": row.telegram_user_id,
+            "created_at": row.created_at,
+            "expires_at": row.expires_at,
+            "error": row.last_error,
+        }
+        for row in rows
+    ]
+
+
+@app.delete("/internal/admin/jobs/{job_id}", dependencies=[Depends(internal_auth), Depends(owner_auth)])
+async def admin_delete_job(job_id: str, session: Session = Depends(get_session)):
+    svc = JobService(session)
+    job = svc.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    for row in svc.list_job_files(job_id):
+        file_store.delete_path(row.file_path)
+    svc.delete_job_files_rows(job_id)
+    file_store.delete_job_dir(job_id)
+
+    if job.github_release_id:
+        try:
+            await GitHubReleaseStorage().delete_release(job.github_release_id)
+        except StorageError as exc:
+            svc.set_error(job, str(exc))
+
+    svc.set_state(job, JobState.DELETED, "deleted by admin")
+    return {"deleted": True}
+
+
+@app.get("/internal/metrics", dependencies=[Depends(internal_auth), Depends(owner_auth)])
+def metrics(session: Session = Depends(get_session)):
+    stats = JobService(session).stats()
+    lines = [
+        f"signbot_jobs_total {stats['total_jobs']}",
+        f"signbot_jobs_active {stats['active_jobs']}",
+        f"signbot_jobs_deleted {stats['deleted_jobs']}",
+        f"signbot_jobs_failed {stats['failed_jobs']}",
+        f"signbot_processing_now {len(processing_jobs)}",
+    ]
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True, "ts": datetime.now(timezone.utc).isoformat()}
@@ -298,10 +350,10 @@ async def process_job(job_id: str) -> None:
 
             try:
                 svc.set_state(job, JobState.VALIDATING, "pre-validation")
-                signer.prevalidate(ipa_bytes, p12_bytes, p12_password, profile_bytes)
+                signer.prevalidate(ipa_bytes, p12_bytes, p12_password, profile_bytes, job.bundle_id)
 
                 svc.set_state(job, JobState.SIGNING, "signing ipa")
-                signed_ipa = signer.sign(ipa_bytes, p12_bytes, p12_password, profile_bytes)
+                signed_ipa = signer.sign(ipa_bytes, p12_bytes, p12_password, profile_bytes, job.bundle_id)
 
                 svc.set_state(job, JobState.UPLOADING, "uploading to github releases")
                 storage = GitHubReleaseStorage()
@@ -357,4 +409,20 @@ async def expiry_loop() -> None:
                         file_store.delete_path(row.file_path)
                     svc.delete_job_files_rows(job.job_id)
                     file_store.delete_job_dir(job.job_id)
+
+            # Recovery for inconsistent jobs that stuck in mid-pipeline.
+            now = datetime.now(timezone.utc)
+            stuck = session.exec(
+                select(UploadJob).where(
+                    UploadJob.state.in_([JobState.UPLOADING, JobState.MANIFEST_READY]),
+                    UploadJob.created_at < now - timedelta(minutes=5),
+                )
+            ).all()
+            for job in stuck:
+                if job.state == JobState.UPLOADING and not job.github_asset_url:
+                    svc.set_state(job, JobState.FAILED, "recovery: upload missing asset")
+                    svc.set_error(job, "recovery detected release without asset")
+                if job.state == JobState.MANIFEST_READY and not job.github_asset_url:
+                    svc.set_state(job, JobState.FAILED, "recovery: manifest has no asset url")
+                    svc.set_error(job, "recovery detected manifest without asset")
         await asyncio.sleep(settings.cleanup_interval_seconds)

@@ -26,5 +26,8 @@ class Settings(BaseSettings):
     private_storage_dir: str = "./private_storage"
     cleanup_interval_seconds: int = 60
 
+    signer_mode: str = "mock"  # mock|external
+    signer_command: str = ""  # e.g. rcodesign sign --p12 cert.p12 --password pass {target}
+
 
 settings = Settings()
