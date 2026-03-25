@@ -28,12 +28,14 @@ class UploadJob(SQLModel, table=True):
     public_slug: str = Field(index=True, unique=True)
     app_name: str
     bundle_id: str
+    app_version: str = "1.0"
     telegram_user_id: int = Field(index=True)
     mode: str = Field(default="one_time")
 
     state: JobState = Field(default=JobState.UPLOADED)
     github_release_id: Optional[int] = None
     github_asset_url: Optional[str] = None
+    github_tag: Optional[str] = None
     manifest_token: str = Field(index=True, unique=True)
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
@@ -64,6 +66,15 @@ class WalletCertificate(SQLModel, table=True):
     encrypted_password_b64: str
     encrypted_mobileprovision_b64: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class JobFile(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    job_id: str = Field(index=True)
+    file_type: str = Field(index=True)
+    file_path: str
+    size_bytes: int
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
 
 
 def ttl_expires(now: datetime, ttl_hours: int) -> datetime:

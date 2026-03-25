@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,6 +13,18 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./signbot.db"
     max_ipa_size_bytes: int = 1024 * 1024 * 1024
     ttl_hours: int = 12
+
+    github_token: str = ""
+    github_owner: str = ""
+    github_repo: str = ""
+    github_api_base: str = "https://api.github.com"
+
+    encryption_key: str = Field(
+        default="PLEASE_CHANGE_ME_32_BYTE_SECRET_KEY__",
+        description="32+ byte secret used to encrypt wallet payload",
+    )
+    private_storage_dir: str = "./private_storage"
+    cleanup_interval_seconds: int = 60
 
 
 settings = Settings()

@@ -4,8 +4,14 @@ ALLOWED_EXTENSIONS = {".ipa", ".p12", ".mobileprovision", ".png", ".jpg", ".jpeg
 ZIP_MAGIC = b"PK\x03\x04"
 
 
+class ValidationError(Exception):
+    pass
+
+
 def sanitize_filename(name: str) -> str:
     cleaned = "".join(c for c in name if c.isalnum() or c in {"-", "_", "."})
+    if not cleaned:
+        raise ValidationError("filename is empty after sanitization")
     return cleaned[:180]
 
 
@@ -26,3 +32,14 @@ def validate_magic(name: str, content: bytes) -> bool:
     if ext == ".mobileprovision":
         return b"<?xml" in content or b"plist" in content
     return False
+
+
+def validate_file(name: str, content: bytes, max_size: int) -> None:
+    if len(content) == 0:
+        raise ValidationError("file is empty")
+    if len(content) > max_size:
+        raise ValidationError("file exceeds max size")
+    if not validate_extension(name):
+        raise ValidationError("extension is not allowed")
+    if not validate_magic(name, content):
+        raise ValidationError("file signature is invalid")
