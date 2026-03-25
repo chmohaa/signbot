@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     app_name: str = "SignBot Secure Gateway"
     public_base_url: str = "https://mydomain.com"
     telegram_bot_url: str = "https://t.me/my_bot"
+    telegram_bot_token: str = ""
+    backend_internal_url: str = "http://127.0.0.1:8000"
     internal_api_token: str = "change-me"
     owner_telegram_id: int = 123456789
     database_url: str = "sqlite:///./signbot.db"

@@ -9,55 +9,73 @@
 - Manifest endpoint `/manifest/{token}.plist` с HTTP 410 после истечения TTL.
 - Внутреннее API `/internal/*` с токеном + owner-only admin/metrics маршруты.
 - Машина состояний: `uploaded`, `queued`, `validating`, `signing`, `uploading`, `manifest_ready`, `completed`, `failed`, `expired`, `deleting`, `deleted`.
-- Идемпотентность: повторный `job_id` возвращает существующий job.
-- Wallet-режим хранения сертификатов в зашифрованном виде (Fernet over SHA-256 key material).
-- Валидация файлов по extension + magic header + size limit (IPA до 1 ГБ).
-- Pre-validation перед подписью:
-  - корректность .p12/пароля,
-  - срок действия сертификата,
-  - срок действия provisioning profile,
-  - проверка, что сертификат входит в profile,
-  - совместимость bundle identifier (requested/IPA/profile).
-- Signing pipeline:
-  - `mock` режим (без внешнего бинаря),
-  - `external` режим с рекурсивным обходом targets (`.framework`, `.appex`, `.bundle`, `.app`) и вызовом внешней команды.
-- Автоматическая очистка по TTL: job -> expired -> deleting -> deleted,
-  удаление GitHub release + локальных временных файлов.
-- Recovery-проход для неконсистентных зависших job в середине пайплайна.
+- Wallet-хранение сертификатов в зашифрованном виде.
+- Signing pipeline с двумя режимами:
+  - `mock` (локальная разработка),
+  - `external` (боевой режим с внешней командой signer).
+- GitHub Releases как временное хранилище IPA + удаление по TTL.
+- Recovery-проход для зависших неконсистентных задач.
 
-## Переменные окружения (.env)
+## 1) Production env (пункт 1)
 
-```env
-APP_NAME=SignBot Secure Gateway
-PUBLIC_BASE_URL=https://mydomain.com
-TELEGRAM_BOT_URL=https://t.me/my_bot
-INTERNAL_API_TOKEN=change-me
-OWNER_TELEGRAM_ID=123456789
-DATABASE_URL=sqlite:///./signbot.db
-MAX_IPA_SIZE_BYTES=1073741824
-TTL_HOURS=12
+Используй шаблон `.env.production.example` и создай `.env`:
 
-GITHUB_TOKEN=ghp_xxx
-GITHUB_OWNER=your-org-or-user
-GITHUB_REPO=temporary-ipa-storage
-GITHUB_API_BASE=https://api.github.com
-
-ENCRYPTION_KEY=replace-with-strong-random-secret
-PRIVATE_STORAGE_DIR=./private_storage
-CLEANUP_INTERVAL_SECONDS=60
-
-SIGNER_MODE=mock
-SIGNER_COMMAND=
+```bash
+cp .env.production.example .env
 ```
 
-Пример для `SIGNER_COMMAND` (external mode):
+Проверь критичные поля:
+- `INTERNAL_API_TOKEN`
+- `GITHUB_*`
+- `ENCRYPTION_KEY`
+- `SIGNER_MODE=external`
+- `SIGNER_COMMAND=...`
+- `TELEGRAM_BOT_TOKEN`
+- `BACKEND_INTERNAL_URL`
+
+## 2) Реальный signer toolchain (пункт 2)
+
+`SignerService` в `external` режиме вызывает команду из `SIGNER_COMMAND` для каждого target (`.framework`, `.appex`, `.bundle`, `.app`).
+
+Пример:
 
 ```bash
 SIGNER_MODE=external
-SIGNER_COMMAND='rcodesign sign --pem-source cert.pem --entitlements entitlements.plist {target}'
+SIGNER_COMMAND='rcodesign sign --pem-source /etc/signbot/cert.pem --entitlements /etc/signbot/entitlements.plist {target}'
 ```
 
-## Локальный запуск
+## 3) Telegram bot слой (пункт 3)
+
+Добавлен `app/telegram_bot.py`:
+- `/sign <bundle_id> <app_name>`
+- пошаговый upload (`.ipa` -> `.p12` -> `.mobileprovision` -> пароль)
+- отправка во внутренний backend API
+- `/status <job_id>`
+
+Запуск:
+
+```bash
+python -m app.telegram_bot
+```
+
+## 4) E2E smoke test (пункт 4)
+
+Добавлен скрипт `scripts/e2e_smoke.py` для проверки полного цикла с **реальными файлами**:
+
+```bash
+BACKEND_URL=http://127.0.0.1:8000 \
+INTERNAL_TOKEN=... \
+TELEGRAM_USER_ID=123 \
+APP_NAME='My App' \
+BUNDLE_ID='com.example.app' \
+IPA_PATH=/path/app.ipa \
+P12_PATH=/path/cert.p12 \
+PROFILE_PATH=/path/profile.mobileprovision \
+P12_PASSWORD='secret' \
+python scripts/e2e_smoke.py
+```
+
+## Локальный запуск API
 
 ```bash
 python -m venv .venv
@@ -70,7 +88,6 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 1. Бот создаёт job через `POST /internal/jobs`.
 2. Бот загружает `.ipa + .p12 + .mobileprovision + password` через `POST /internal/jobs/{job_id}/upload`.
-3. Backend обрабатывает задачу фоном, валидирует, подписывает, загружает IPA в GitHub release.
-4. Бот получает публичную install ссылку и отдаёт пользователю.
-5. Через 12 часов release и локальные временные файлы удаляются.
-6. Owner может смотреть `/internal/admin/jobs`, удалять jobs и читать `/internal/metrics`.
+3. Backend валидирует, подписывает и загружает IPA в GitHub release.
+4. Пользователь получает install URL.
+5. Через 12 часов release и временные данные удаляются.
